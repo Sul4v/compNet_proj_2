@@ -7,8 +7,8 @@ CLIENT_BIN = ftpcli
 SERVER_BIN = ftpserv
 
 # Source files
-CLIENT_SRC = client/ftpcli.c
-SERVER_SRC = server/ftpserv.c
+CLIENT_SRC = code/client/ftpcli.c
+SERVER_SRC = code/server/ftpserv.c
 
 # Object files
 CLIENT_OBJS = $(CLIENT_SRC:.c=.o)
