@@ -24,6 +24,13 @@ void print_client_usage();
 int data_listen_fd = -1; // Initialize to invalid
 
 int main(int argc, char *argv[]) {
+    // Set working directory to client folder
+    if (chdir("client") != 0) {
+        perror("Failed to set client working directory");
+        exit(EXIT_FAILURE);
+    }
+    printf("FTP Client Starting in %s\n", "client");
+
     int sock_fd;
     struct sockaddr_in server_addr;
     char buffer[BUFFER_SIZE];
@@ -31,8 +38,6 @@ int main(int argc, char *argv[]) {
     int bytes_received;
     char original_command[BUFFER_SIZE]; // Store the original user command
     char original_argument[BUFFER_SIZE]; // Store the argument part
-
-    printf("FTP Client Starting...\n");
 
     // Check for command-line argument (server IP)
     if (argc != 2) {

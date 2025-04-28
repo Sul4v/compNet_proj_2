@@ -22,6 +22,7 @@
 #define MAX_USERS 50 // Maximum number of users to load from file
 #define MAX_USER_LEN 100
 #define MAX_PASS_LEN 100
+#define ROOT_PATH_MAX PATH_MAX
 
 // Structure to hold client connection state
 typedef struct {
@@ -35,7 +36,7 @@ typedef struct {
     int data_port;                 // Client's port for data connection
     int port_cmd_received;         // Flag: Has PORT been received recently?
     pid_t child_pid;               // PID of child process handling data transfer (-1 if none)
-    // Add more state like current directory, transfer type etc.
+    char working_directory[PATH_MAX]; // Store the client's working directory
 } client_state_t;
 
 // Structure for storing user credentials
@@ -47,6 +48,8 @@ typedef struct {
 // Global array for user credentials and count
 user_auth_t loaded_users[MAX_USERS];
 int num_loaded_users = 0;
+
+char server_root[ROOT_PATH_MAX]; // Global variable to store server root
 
 // TODO: Add function prototypes
 // Function to send a reply to the client
@@ -62,6 +65,12 @@ client_state_t clients[MAX_CLIENTS];
 
 int main(int argc, char *argv[]) {
     printf("FTP Server Starting...\n");
+
+    // Store the server's root directory at startup
+    if (getcwd(server_root, sizeof(server_root)) == NULL) {
+        perror("getcwd failed for server root");
+        exit(EXIT_FAILURE);
+    }
 
     // Load users from file (now from root directory)
     if (load_users("users.csv") < 0) {
@@ -329,9 +338,42 @@ void handle_client_command(client_state_t *client) {
                  }
 
                 if (password_correct) {
-                    client->authenticated = 1;
-                    send_reply(client->fd, "230 User logged in, proceed.\r\n");
-                    printf("Client [%d] authenticated as user '%s'\n", client->fd, client->username_provided);
+                    // First change back to the server root directory
+                    if (chdir(server_root) == 0) {
+                        // Then change to the server directory
+                        if (chdir("server") == 0) {
+                            // Finally try to change to the user's directory
+                            if (chdir(client->username_provided) == 0) {
+                                client->authenticated = 1;
+                                // Store the working directory
+                                if (getcwd(client->working_directory, sizeof(client->working_directory)) != NULL) {
+                                    send_reply(client->fd, "230 User logged in, proceed.\r\n");
+                                    printf("Client [%d] authenticated as user '%s' and changed to directory '%s'\n", 
+                                           client->fd, client->username_provided, client->working_directory);
+                                } else {
+                                    perror("getcwd failed after chdir");
+                                    client->authenticated = 0;
+                                    client->username_provided[0] = '\0';
+                                    send_reply(client->fd, "530 Failed to get current directory.\r\n");
+                                }
+                            } else {
+                                perror("chdir to user directory failed");
+                                client->authenticated = 0;
+                                client->username_provided[0] = '\0';
+                                send_reply(client->fd, "530 User directory not found.\r\n");
+                            }
+                        } else {
+                            perror("chdir to server directory failed");
+                            client->authenticated = 0;
+                            client->username_provided[0] = '\0';
+                            send_reply(client->fd, "530 Server directory not found.\r\n");
+                        }
+                    } else {
+                        perror("chdir to server root failed");
+                        client->authenticated = 0;
+                        client->username_provided[0] = '\0';
+                        send_reply(client->fd, "530 Server root directory not found.\r\n");
+                    }
                 } else {
                     // Wrong password or user disappeared between USER/PASS?
                     client->authenticated = 0;
@@ -443,8 +485,13 @@ void handle_client_command(client_state_t *client) {
                     close(data_sock); // Close original descriptor after dup2
 
                     // Execute ls -l command
-                    // TODO: Change directory first if CWD is implemented
-                    execlp("ls", "ls", "-l", (char *)NULL);
+                    // First change to the correct directory
+                    if (chdir(client->working_directory) == 0) {
+                        execlp("ls", "ls", "-l", (char *)NULL);
+                    } else {
+                        perror("chdir failed in LIST");
+                        exit(EXIT_FAILURE);
+                    }
                     
                     // If execlp returns, it's an error
                     perror("execlp ls failed");
@@ -460,28 +507,33 @@ void handle_client_command(client_state_t *client) {
             }
         }
         else if (strcasecmp(trimmed_cmd, "PWD") == 0) {
-            char current_dir[PATH_MAX]; // PATH_MAX from limits.h
-            if (getcwd(current_dir, sizeof(current_dir)) != NULL) {
-                char reply[BUFFER_SIZE];
-                // Format required by RFC 959: 257 "PATHNAME" information.
-                snprintf(reply, sizeof(reply), "257 \"%s\" is current directory.\r\n", current_dir);
-                send_reply(client->fd, reply);
+            char reply[BUFFER_SIZE];
+            // Get the path relative to the user's directory
+            char *user_dir = strstr(client->working_directory, client->username_provided);
+            if (user_dir != NULL) {
+                // Add trailing slash
+                char dir_with_slash[PATH_MAX];
+                snprintf(dir_with_slash, sizeof(dir_with_slash), "%s/", user_dir);
+                snprintf(reply, sizeof(reply), "257 \"%s\" is current directory.\r\n", dir_with_slash);
             } else {
-                perror("getcwd failed");
-                send_reply(client->fd, "550 Requested action not taken (getcwd failed).\r\n");
+                // Fallback to just the username if we can't find the path
+                snprintf(reply, sizeof(reply), "257 \"%s/\" is current directory.\r\n", client->username_provided);
             }
+            send_reply(client->fd, reply);
         }
         else if (strcasecmp(trimmed_cmd, "CWD") == 0) {
              if (strlen(trimmed_arg) == 0) {
                  send_reply(client->fd, "501 Syntax error in parameters or arguments (Missing directory).\r\n");
              } else {
                  if (chdir(trimmed_arg) == 0) {
-                     char current_dir[PATH_MAX];
-                     getcwd(current_dir, sizeof(current_dir)); // Get new directory to confirm/log
-                     printf("Client [%d] changed directory to: %s\n", client->fd, current_dir);
-                     send_reply(client->fd, "200 Directory changed successfully.\r\n"); // Simplified reply
-                     // RFC suggests: 250 Requested file action okay, completed.
-                     // send_reply(client->fd, "250 CWD command successful.\r\n");
+                     // Update the working directory
+                     if (getcwd(client->working_directory, sizeof(client->working_directory)) != NULL) {
+                         printf("Client [%d] changed directory to: %s\n", client->fd, client->working_directory);
+                         send_reply(client->fd, "200 Directory changed successfully.\r\n");
+                     } else {
+                         perror("getcwd failed after chdir");
+                         send_reply(client->fd, "550 Failed to get current directory.\r\n");
+                     }
                  } else {
                      perror("chdir failed");
                      char error_reply[BUFFER_SIZE];
@@ -700,6 +752,21 @@ void handle_client_command(client_state_t *client) {
             }
         }
         // --- Add other authenticated command handlers --- 
+        else if (strcasecmp(trimmed_cmd, "!CWD") == 0) {
+            if (chdir(trimmed_arg) == 0) {
+                printf("Changed local directory to %s\n", trimmed_arg);
+            } else {
+                perror("Local CWD failed");
+            }
+        }
+        else if (strcasecmp(trimmed_cmd, "!pwd") == 0) {
+            char cwd[PATH_MAX];
+            if (getcwd(cwd, sizeof(cwd)) != NULL) {
+                printf("Local current directory: %s\n", cwd);
+            } else {
+                perror("getcwd failed");
+            }
+        }
         else {
             send_reply(client->fd, "502 Command not implemented.\r\n");
         }
