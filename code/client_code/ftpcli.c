@@ -10,6 +10,7 @@
 #include <netdb.h>     // For getnameinfo
 #include <limits.h>    // For PATH_MAX
 #include <fcntl.h>     // For open() flags
+#include <sys/wait.h>  // For waitpid
 
 #define SERVER_PORT 21
 #define BUFFER_SIZE 4096 // Larger buffer for potential LIST responses
@@ -171,6 +172,25 @@ int main(int argc, char *argv[]) {
                         printf("Local directory changed to: %s\n", current_dir);
                     } else {
                         perror("Local chdir failed");
+                    }
+                }
+            } else if (strcasecmp(local_cmd, "LIST") == 0) {
+                // Execute ls -l command locally
+                pid_t pid = fork();
+                if (pid < 0) {
+                    perror("fork failed for local LIST");
+                } else if (pid == 0) {
+                    // Child process
+                    execlp("ls", "ls", "-l", (char *)NULL);
+                    // If execlp returns, it's an error
+                    perror("execlp ls failed");
+                    exit(EXIT_FAILURE);
+                } else {
+                    // Parent process
+                    int status;
+                    waitpid(pid, &status, 0);
+                    if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                        printf("Local LIST command failed\n");
                     }
                 }
             } else {

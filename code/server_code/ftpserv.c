@@ -775,6 +775,26 @@ void handle_client_command(client_state_t *client) {
                 perror("getcwd failed");
             }
         }
+        else if (strcasecmp(trimmed_cmd, "!list") == 0 || strcasecmp(trimmed_cmd, "!LIST") == 0) {
+            // Execute ls -l command locally
+            pid_t pid = fork();
+            if (pid < 0) {
+                perror("fork failed for !list");
+            } else if (pid == 0) {
+                // Child process
+                execlp("ls", "ls", "-l", (char *)NULL);
+                // If execlp returns, it's an error
+                perror("execlp ls failed");
+                exit(EXIT_FAILURE);
+            } else {
+                // Parent process
+                int status;
+                waitpid(pid, &status, 0);
+                if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                    printf("Local list command failed\n");
+                }
+            }
+        }
         else {
             send_reply(client->fd, "502 Command not implemented.\r\n");
         }
