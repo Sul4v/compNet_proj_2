@@ -3,8 +3,8 @@ CFLAGS = -Wall -Wextra -std=c11 -g
 LDFLAGS =
 
 # Binaries
-CLIENT_BIN = ftpcli
-SERVER_BIN = ftpserv
+CLIENT_BIN = ftp_client
+SERVER_BIN = ftp_server
 
 # Source files
 CLIENT_SRC = code/client_code/ftpcli.c

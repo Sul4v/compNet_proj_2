@@ -25,33 +25,28 @@ void print_client_usage();
 int data_listen_fd = -1; // Initialize to invalid
 
 int main(int argc, char *argv[]) {
-    // Set working directory to client folder
-    if (chdir("client") != 0) {
-        perror("Failed to set client working directory");
-        exit(EXIT_FAILURE);
-    }
-    printf("FTP Client Starting in %s\n", "client");
-
     int sock_fd;
     struct sockaddr_in server_addr;
     char buffer[BUFFER_SIZE];
     char user_input[BUFFER_SIZE];
     int bytes_received;
-    char original_command[BUFFER_SIZE]; // Store the original user command
-    char original_argument[BUFFER_SIZE]; // Store the argument part
+    char original_command[BUFFER_SIZE];
+    char original_argument[BUFFER_SIZE];
 
-    // Check for command-line argument (server IP)
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <server_ip>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    const char *server_ip = argv[1];
+    // Use localhost if no IP provided
+    const char *server_ip = (argc == 2) ? argv[1] : "127.0.0.1";
 
     // Create socket
     if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
+    }
+
+    // Change to client directory
+    if (chdir("client") < 0) {
+        perror("Failed to change to client directory");
+        // Don't exit - just warn the user
+        fprintf(stderr, "Warning: Could not change to client directory\n");
     }
 
     // Initialize server address structure
@@ -73,8 +68,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Connected to server %s:%d\n", server_ip, SERVER_PORT);
-
     // Read the initial welcome message from the server
     bytes_received = read_reply(sock_fd, buffer, sizeof(buffer) - 1);
     if (bytes_received <= 0) {
@@ -83,7 +76,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     buffer[bytes_received] = '\0';
-    printf("SERVER: %s", buffer);
+    printf("%s", buffer);  // Print server response without "SERVER: " prefix
 
     // Check if the welcome message indicates readiness (starts with 220)
     if (strncmp(buffer, "220", 3) != 0) {
@@ -186,12 +179,9 @@ int main(int argc, char *argv[]) {
                     perror("execlp ls failed");
                     exit(EXIT_FAILURE);
                 } else {
-                    // Parent process
+                    // Parent process - wait for child to complete
                     int status;
-                    waitpid(pid, &status, 0);
-                    if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-                        printf("Local LIST command failed\n");
-                    }
+                    waitpid(pid, &status, 0); // Remove WNOHANG to properly wait
                 }
             } else {
                  fprintf(stderr, "Unknown local command: %s\n", local_cmd);
@@ -223,45 +213,39 @@ int main(int argc, char *argv[]) {
             }
 
             // Send the PORT command first
-            printf("DEBUG: Sending PORT command: %s\n", port_command);
             if (send(sock_fd, port_command, strlen(port_command), 0) < 0) {
                 perror("send (PORT) failed");
-                close(data_listen_fd); // Clean up data socket
+                close(data_listen_fd);
                 data_listen_fd = -1;
-                continue; // Skip sending the original command
+                continue;
             }
 
-            // Read the server's reply to PORT
             bytes_received = read_reply(sock_fd, buffer, sizeof(buffer) - 1);
             if (bytes_received <= 0) {
                 fprintf(stderr, "Server disconnected or error reading PORT reply.\n");
-                close(data_listen_fd); // Clean up data socket
+                close(data_listen_fd);
                 data_listen_fd = -1;
                 break;
             }
             buffer[bytes_received] = '\0';
-            printf("SERVER: %s", buffer);
+            printf("%s", buffer);
 
-            // Check if PORT command was successful (starts with 200)
             if (strncmp(buffer, "200", 3) != 0) {
                 fprintf(stderr, "PORT command failed. Aborting data transfer command.\n");
-                close(data_listen_fd); // Clean up data socket
+                close(data_listen_fd);
                 data_listen_fd = -1;
-                continue; // Skip sending the original command (LIST/RETR/STOR)
+                continue;
             }
-             // Now data_listen_fd is valid and listening, ready for the server to connect
-             // The original command (LIST/RETR/STOR) will be sent next
         }
 
         // --- Send the command to server --- 
         // Format command with FTP required CRLF
         snprintf(buffer, sizeof(buffer), "%s\r\n", command_to_send);
 
-        printf("DEBUG: Sending command: %s", buffer);
         // Send command to server
         if (send(sock_fd, buffer, strlen(buffer), 0) < 0) {
             perror("send failed");
-            if (data_listen_fd != -1) close(data_listen_fd); // Clean up if needed
+            if (data_listen_fd != -1) close(data_listen_fd);
             break;
         }
 
@@ -275,7 +259,7 @@ int main(int argc, char *argv[]) {
             break;
         }
         buffer[bytes_received] = '\0';
-        printf("SERVER: %s", buffer);
+        printf("%s", buffer);
 
         // If the command was one that initiated data transfer AND
         // the server sent a positive preliminary reply (e.g., 150), 
@@ -286,12 +270,11 @@ int main(int argc, char *argv[]) {
             socklen_t addrlen = sizeof(data_client_addr);
             int data_sock_fd = accept(data_listen_fd, (struct sockaddr *)&data_client_addr, &addrlen);
             
-            close(data_listen_fd); // Close listening socket after accepting
-            data_listen_fd = -1;   // Reset global fd
+            close(data_listen_fd);
+            data_listen_fd = -1;
 
             if (data_sock_fd < 0) {
-                 perror("accept (data connection) failed");
-                 // Server might send an error reply on control connection next
+                perror("accept (data connection) failed");
             } else {
                 printf("DEBUG: Data connection established...\n");
 
@@ -405,14 +388,13 @@ int main(int argc, char *argv[]) {
                     break;
                  }      
                  buffer[bytes_received] = '\0';
-                 printf("SERVER: %s", buffer);
+                 printf("%s", buffer);
             }
         }
 
         // Check if the command was QUIT 
         if (strcasecmp(user_input, "QUIT") == 0) {
-            // Server reply should indicate closure (e.g., 221)
-            printf("Exiting client.\n");
+            printf("Closed!\n");
             break; // Exit loop
         }
     }
@@ -569,15 +551,16 @@ int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
 }
 
 void print_client_usage() {
-    printf("\nHello! Please Authenticate to run server commands\n");
-    printf("1. Type \"USER\" followed by a space and your username\n");
-    printf("2. Type \"PASS\" followed by a space and your password\n\n");
+    printf("Hello!! Please Authenticate to run server commands\n");
+    printf("1. type \"USER\" followed by a space and your username\n");
+    printf("2. type \"PASS\" followed by a space and your password\n\n");
     printf("\"QUIT\" to close connection at any moment\n");
-    printf("Once Authenticated, this is the list of commands:\n");
-    printf("* \"STOR\" + space + filename |to send a file to the server\n");
-    printf("* \"RETR\" + space + filename |to download a file from the server\n");
-    printf("* \"LIST\"                    |to list all the files under the current server directory\n");
-    printf("* \"CWD\" + space + directory  |to change the current server directory\n");
-    printf("* \"PWD\"                     |to display the current server directory\n");
-    printf("Add \"!\" before the last three commands to apply them locally (e.g., !PWD)\n\n");
+    printf("Once Authenticated\n");
+    printf("this is the list of commands :\n");
+    printf("\"STOR\" + space + filename |to send a file to the server\n");
+    printf("\"RETR\" + space + filename |to download a file from the server\n");
+    printf("\"LIST\" |to  to list all the files under the current server directory\n");
+    printf("\"CWD\" + space + directory |to change the current server directory\n");
+    printf("\"PWD\" to display the current server directory\n");
+    printf("Add \"!\" before the last three commands to apply them locally\n\n");
 } 
