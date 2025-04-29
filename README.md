@@ -59,7 +59,7 @@ Standard C build tools (`gcc`, `make`) are required.
     make clean
     ```
 
-This will create two executables: `ftpcli` (in the root directory) and `ftpserv` (in the root directory).
+This will create two executables: `ftp_client` (in the root directory) and `ftp_server` (in the root directory).
 
 ## Running
 
@@ -68,16 +68,16 @@ This will create two executables: `ftpcli` (in the root directory) and `ftpserv`
 2.  **Start the Server:**
     Open a terminal in the project root directory and run:
     ```bash
-    ./ftpserv 
+    ./ftp_server
     ```
     The server will start listening on port 21.
 
 3.  **Start the Client:**
     Open *another* terminal in the project root directory and run:
     ```bash
-    ./ftpcli <server_ip_address>
+    ./ftp_client <server_ip_address>
     ```
-    Replace `<server_ip_address>` with the actual IP address of the machine running the server. If running on the same machine, use `127.0.0.1`:
+    Replace `<server_ip_address>` with the actual IP address of the machine running the server. If running on the same machine, use `127.0.0.1`. You can also leave IP address if running locally.
     ```bash
     ./ftpcli 127.0.0.1
     ```

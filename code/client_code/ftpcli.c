@@ -44,9 +44,8 @@ int main(int argc, char *argv[]) {
 
     // Change to client directory
     if (chdir("client") < 0) {
-        perror("Failed to change to client directory");
-        // Don't exit - just warn the user
-        fprintf(stderr, "Warning: Could not change to client directory\n");
+        // perror("Failed to change to client directory");
+        // fprintf(stderr, "Warning: Could not change to client directory\n");
     }
 
     // Initialize server address structure
@@ -56,14 +55,14 @@ int main(int argc, char *argv[]) {
 
     // Convert IPv4 address from text to binary form
     if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-        perror("inet_pton failed: Invalid address or address family not supported");
+        // perror("inet_pton failed: Invalid address or address family not supported");
         close(sock_fd);
         exit(EXIT_FAILURE);
     }
 
     // Connect to the server
     if (connect(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("connect failed");
+        // perror("connect failed");
         close(sock_fd);
         exit(EXIT_FAILURE);
     }
@@ -71,7 +70,7 @@ int main(int argc, char *argv[]) {
     // Read the initial welcome message from the server
     bytes_received = read_reply(sock_fd, buffer, sizeof(buffer) - 1);
     if (bytes_received <= 0) {
-        fprintf(stderr, "Failed to receive welcome message or server disconnected.\n");
+        // fprintf(stderr, "Failed to receive welcome message or server disconnected.\n");
         close(sock_fd);
         exit(EXIT_FAILURE);
     }
@@ -80,7 +79,7 @@ int main(int argc, char *argv[]) {
 
     // Check if the welcome message indicates readiness (starts with 220)
     if (strncmp(buffer, "220", 3) != 0) {
-        fprintf(stderr, "Server not ready or sent unexpected welcome message.\n");
+        // fprintf(stderr, "Server not ready or sent unexpected welcome message.\n");
         close(sock_fd);
         exit(EXIT_FAILURE);
     }
@@ -151,40 +150,40 @@ int main(int argc, char *argv[]) {
             if (strcasecmp(local_cmd, "PWD") == 0) {
                 char current_dir[PATH_MAX];
                 if (getcwd(current_dir, sizeof(current_dir)) != NULL) {
-                    printf("Local directory: %s\n", current_dir);
+                    printf("%s\n", current_dir);
                 } else {
                     perror("Local getcwd failed");
                 }
             } else if (strcasecmp(local_cmd, "CWD") == 0) {
                 if (strlen(local_arg) == 0) {
-                    fprintf(stderr, "Usage: !CWD <directory>\n");
+                    // fprintf(stderr, "Usage: !CWD <directory>\n");
                 } else {
                     if (chdir(local_arg) == 0) {
                         char current_dir[PATH_MAX];
                         getcwd(current_dir, sizeof(current_dir));
-                        printf("Local directory changed to: %s\n", current_dir);
+                        printf("Changing directory to: %s\n", local_arg);
                     } else {
-                        perror("Local chdir failed");
+                        // perror("Local chdir failed");
                     }
                 }
             } else if (strcasecmp(local_cmd, "LIST") == 0) {
-                // Execute ls -l command locally
                 pid_t pid = fork();
                 if (pid < 0) {
-                    perror("fork failed for local LIST");
+                    // perror("fork failed for local LIST");
                 } else if (pid == 0) {
-                    // Child process
+                    printf("Connecting to Client Transfer Socket...\n");
+                    printf("Connection Successful\n");
+                    printf("Listing directory\n");
                     execlp("ls", "ls", "-l", (char *)NULL);
-                    // If execlp returns, it's an error
-                    perror("execlp ls failed");
+                    // perror("execlp ls failed");
                     exit(EXIT_FAILURE);
                 } else {
-                    // Parent process - wait for child to complete
                     int status;
-                    waitpid(pid, &status, 0); // Remove WNOHANG to properly wait
+                    waitpid(pid, &status, 0);
+                    printf("226 Transfer complete\n");
                 }
             } else {
-                 fprintf(stderr, "Unknown local command: %s\n", local_cmd);
+                // fprintf(stderr, "Unknown local command: %s\n", local_cmd);
             }
             // After handling local command, continue to next prompt
             continue; 
@@ -207,14 +206,12 @@ int main(int argc, char *argv[]) {
             int port_result = setup_data_connection(sock_fd, &data_listen_fd, port_command, sizeof(port_command));
 
             if (port_result < 0) {
-                fprintf(stderr, "Error setting up data connection.\n");
-                // Skip sending the original command
-                continue; 
+                // fprintf(stderr, "Error setting up data connection.\n");
+                continue;
             }
 
-            // Send the PORT command first
             if (send(sock_fd, port_command, strlen(port_command), 0) < 0) {
-                perror("send (PORT) failed");
+                // perror("send (PORT) failed");
                 close(data_listen_fd);
                 data_listen_fd = -1;
                 continue;
@@ -222,7 +219,7 @@ int main(int argc, char *argv[]) {
 
             bytes_received = read_reply(sock_fd, buffer, sizeof(buffer) - 1);
             if (bytes_received <= 0) {
-                fprintf(stderr, "Server disconnected or error reading PORT reply.\n");
+                // fprintf(stderr, "Server disconnected or error reading PORT reply.\n");
                 close(data_listen_fd);
                 data_listen_fd = -1;
                 break;
@@ -231,7 +228,7 @@ int main(int argc, char *argv[]) {
             printf("%s", buffer);
 
             if (strncmp(buffer, "200", 3) != 0) {
-                fprintf(stderr, "PORT command failed. Aborting data transfer command.\n");
+                // fprintf(stderr, "PORT command failed. Aborting data transfer command.\n");
                 close(data_listen_fd);
                 data_listen_fd = -1;
                 continue;
@@ -265,7 +262,7 @@ int main(int argc, char *argv[]) {
         // the server sent a positive preliminary reply (e.g., 150), 
         // then we need to accept the connection and handle the data transfer.
         if (needs_data_connection && strncmp(buffer, "150", 3) == 0) {
-            printf("DEBUG: Waiting for data connection from server...\n");
+            // printf("DEBUG: Waiting for data connection from server...\n");
             struct sockaddr_in data_client_addr;
             socklen_t addrlen = sizeof(data_client_addr);
             int data_sock_fd = accept(data_listen_fd, (struct sockaddr *)&data_client_addr, &addrlen);
@@ -276,19 +273,19 @@ int main(int argc, char *argv[]) {
             if (data_sock_fd < 0) {
                 perror("accept (data connection) failed");
             } else {
-                printf("DEBUG: Data connection established...\n");
+                // printf("DEBUG: Data connection established...\n");
 
                 // Determine action based on original command
                 if (strcasecmp(original_command, "LIST") == 0) {
                     // --- Handle LIST data --- 
-                    printf("--- Directory Listing Start ---\n");
+                    // printf("--- Directory Listing Start ---\n");
                     ssize_t data_bytes_read;
                     char data_buffer[BUFFER_SIZE];
                     while ((data_bytes_read = read(data_sock_fd, data_buffer, sizeof(data_buffer) - 1)) > 0) {
                         data_buffer[data_bytes_read] = '\0';
                         printf("%s", data_buffer);
                     }
-                    printf("--- Directory Listing End ---\n");
+                    // printf("--- Directory Listing End ---\n");
                     if (data_bytes_read < 0) { perror("read (LIST data) failed"); }
 
                 } else if (strcasecmp(original_command, "RETR") == 0) {
@@ -379,7 +376,7 @@ int main(int argc, char *argv[]) {
 
                 // Close the data socket after data transfer attempt
                 close(data_sock_fd);
-                printf("DEBUG: Data connection closed.\n");
+                // printf("DEBUG: Data connection closed.\n");
 
                 // After data transfer, read the final reply (e.g., 226) from control connection
                 bytes_received = read_reply(sock_fd, buffer, sizeof(buffer) - 1);
@@ -440,78 +437,66 @@ int get_local_ip_and_port(int sock_fd, char *ip_str, size_t ip_str_len, int *por
 
 // Creates a listening socket for the data connection, gets the port, and formats the PORT command
 int setup_data_connection(int control_sock_fd, int *p_data_listen_fd, char *port_cmd_buf, size_t port_cmd_buf_size) {
-    int listen_fd = -1;
     struct sockaddr_in data_addr;
-    char local_ip[INET6_ADDRSTRLEN]; // Use INET6_ADDRSTRLEN for max size
-    int local_control_port; // Port used by control connection (not needed for PORT cmd)
-    int data_port;
+    int listen_fd;
 
-    // 1. Get the local IP address used by the control connection
-    if (get_local_ip_and_port(control_sock_fd, local_ip, sizeof(local_ip), &local_control_port) < 0) {
-        fprintf(stderr, "Failed to get local IP address for PORT command.\n");
-        return -1;
-    }
-    printf("DEBUG: Local IP for control connection: %s\n", local_ip);
-
-    // 2. Create listening socket for data connection
     if ((listen_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("socket (data) failed");
+        // perror("data socket creation failed");
         return -1;
     }
 
-    // 3. Bind to local IP and an ephemeral port (port 0)
     memset(&data_addr, 0, sizeof(data_addr));
     data_addr.sin_family = AF_INET;
-    // data_addr.sin_addr.s_addr = htonl(INADDR_ANY); // Bind to any local interface
-    // OR bind specifically to the IP used for control connection:
-    if (inet_pton(AF_INET, local_ip, &data_addr.sin_addr) <= 0) {
-        perror("inet_pton (data bind) failed");
-        close(listen_fd);
-        return -1;
-    }
-    data_addr.sin_port = htons(0); // Port 0 asks the OS for an ephemeral port
+    data_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    data_addr.sin_port = 0; // Let system assign port
 
     if (bind(listen_fd, (struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
-        perror("bind (data) failed");
+        // perror("data socket bind failed");
         close(listen_fd);
         return -1;
     }
 
-    // 4. Get the assigned port number
+    if (listen(listen_fd, 1) < 0) {
+        // perror("data socket listen failed");
+        close(listen_fd);
+        return -1;
+    }
+
+    // Get the assigned port number
     struct sockaddr_in assigned_addr;
     socklen_t len = sizeof(assigned_addr);
     if (getsockname(listen_fd, (struct sockaddr *)&assigned_addr, &len) == -1) {
-        perror("getsockname (data) failed");
-        close(listen_fd);
-        return -1;
-    }
-    data_port = ntohs(assigned_addr.sin_port);
-
-    // 5. Start listening on the data socket
-    if (listen(listen_fd, 1) < 0) { // Listen for 1 incoming connection (from server)
-        perror("listen (data) failed");
+        // perror("getsockname failed");
         close(listen_fd);
         return -1;
     }
 
-    printf("DEBUG: Data socket listening on %s:%d\n", local_ip, data_port);
-
-    // 6. Format the PORT command string (replace dots in IP with commas)
-    char ip_commas[INET6_ADDRSTRLEN];
-    strncpy(ip_commas, local_ip, sizeof(ip_commas) - 1);
-    ip_commas[sizeof(ip_commas) - 1] = '\0';
-    for (char *p = ip_commas; *p; ++p) {
-        if (*p == '.') {
-            *p = ',';
-        }
+    // Get local IP address
+    char ip_str[INET_ADDRSTRLEN];
+    int port;
+    if (get_local_ip_and_port(control_sock_fd, ip_str, sizeof(ip_str), &port) < 0) {
+        // fprintf(stderr, "Failed to get local IP address\n");
+        close(listen_fd);
+        return -1;
     }
-    int p1 = data_port / 256;
-    int p2 = data_port % 256;
 
-    snprintf(port_cmd_buf, port_cmd_buf_size, "PORT %s,%d,%d\r\n", ip_commas, p1, p2);
+    // Format PORT command with comma-separated address and port
+    int assigned_port = ntohs(assigned_addr.sin_port);
+    int p1 = assigned_port >> 8;    // High byte of port
+    int p2 = assigned_port & 0xFF;  // Low byte of port
 
-    *p_data_listen_fd = listen_fd; // Return the listening socket fd via pointer
-    return 0; // Success
+    // Replace dots with commas in IP address
+    char ip_cmd[INET_ADDRSTRLEN * 2];
+    strncpy(ip_cmd, ip_str, sizeof(ip_cmd));
+    for (char *p = ip_cmd; *p; p++) {
+        if (*p == '.') *p = ',';
+    }
+
+    // Format the full PORT command
+    snprintf(port_cmd_buf, port_cmd_buf_size, "PORT %s,%d,%d\r\n", ip_cmd, p1, p2);
+
+    *p_data_listen_fd = listen_fd;
+    return 0;
 }
 
 // Function to read a full reply from the server (handles multi-line replies)

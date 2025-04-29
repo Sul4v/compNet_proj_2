@@ -64,20 +64,16 @@ int load_users(const char* filename); // Prototype for user loading function
 client_state_t clients[MAX_CLIENTS];
 
 int main(int argc, char *argv[]) {
-    printf("FTP Server Starting...\n");
-
-    // Store the server's root directory at startup
+    // Remove initial startup messages
     if (getcwd(server_root, sizeof(server_root)) == NULL) {
         perror("getcwd failed for server root");
         exit(EXIT_FAILURE);
     }
 
-    // Load users from file (now from root directory)
     if (load_users("users.csv") < 0) {
          fprintf(stderr, "FATAL: Failed to load users from users.csv\n");
          exit(EXIT_FAILURE);
     }
-    printf("Loaded %d users from users.csv\n", num_loaded_users);
     if (num_loaded_users == 0) {
         fprintf(stderr, "WARNING: No users loaded. Authentication will fail.\n");
     }
@@ -118,8 +114,6 @@ int main(int argc, char *argv[]) {
         close(listen_fd);
         exit(EXIT_FAILURE);
     }
-
-    printf("Server listening on port %d\n", LISTEN_PORT);
 
     // Initialize client states
     for (int i = 0; i < MAX_CLIENTS; ++i) {
@@ -179,12 +173,9 @@ int main(int argc, char *argv[]) {
 
             if ((new_socket = accept(listen_fd, (struct sockaddr *)&client_addr, &addrlen)) < 0) {
                 perror("accept failed");
-                // Continue accepting other connections
             } else {
-                printf("New connection from %s:%d on socket %d\n",
-                       inet_ntoa(client_addr.sin_addr),
-                       ntohs(client_addr.sin_port),
-                       new_socket);
+                printf("Connection established with user %d\n", new_socket);
+                printf("Their port: %d\n", ntohs(client_addr.sin_port));
 
                 // Add new socket to the array of clients
                 int added = 0;
@@ -192,13 +183,12 @@ int main(int argc, char *argv[]) {
                     if (clients[i].fd == -1) { // Find an empty slot
                         clients[i].fd = new_socket;
                         clients[i].addr = client_addr;
-                        clients[i].authenticated = 0; // Ensure new client is not authenticated
+                        clients[i].authenticated = 0;
                         clients[i].username_provided[0] = '\0';
-                        clients[i].data_port = -1;      // Reset data port info for new client
+                        clients[i].data_port = -1;
                         clients[i].port_cmd_received = 0;
-                        clients[i].child_pid = -1; // Ensure new client has no child PID
+                        clients[i].child_pid = -1;
 
-                        // Send initial welcome message
                         send_reply(new_socket, "220 Service ready for new user.\r\n");
                         added = 1;
                         break;
@@ -240,9 +230,7 @@ int main(int argc, char *argv[]) {
 void send_reply(int client_fd, const char *message) {
     if (send(client_fd, message, strlen(message), 0) < 0) {
         perror("send failed");
-        // Handle error, maybe close connection?
     }
-    printf("SENT to [%d]: %s", client_fd, message); // Log sent message
 }
 
 // Function to trim leading/trailing whitespace from a string (in-place)
@@ -268,8 +256,8 @@ void handle_client_command(client_state_t *client) {
     int valread = read(client->fd, buffer, BUFFER_SIZE - 1);
 
     if (valread > 0) {
-        buffer[valread] = '\0'; // Null-terminate the received data
-        printf("RECV from [%d]: %s", client->fd, buffer); // Log received message
+        buffer[valread] = '\0';
+        // Remove the connection established message from here since it's now in accept()
 
         // Basic command parsing (split command and argument)
         char *raw_command = buffer;
@@ -303,12 +291,13 @@ void handle_client_command(client_state_t *client) {
                 // Check against loaded users
                 int user_found = 0;
                 for (int i = 0; i < num_loaded_users; ++i) {
-                    if (strcmp(trimmed_arg, loaded_users[i].username) == 0) { // Case sensitive compare
+                    if (strcmp(trimmed_arg, loaded_users[i].username) == 0) {
                         user_found = 1;
                         strncpy(client->username_provided, trimmed_arg, sizeof(client->username_provided) - 1);
                         client->username_provided[sizeof(client->username_provided) - 1] = '\0';
+                        printf("Successful username verification\n");
                         send_reply(client->fd, "331 Username OK, need password.\r\n");
-                        break; // Found the user
+                        break;
                     }
                 }
                 if (!user_found) {
@@ -345,11 +334,10 @@ void handle_client_command(client_state_t *client) {
                             // Finally try to change to the user's directory
                             if (chdir(client->username_provided) == 0) {
                                 client->authenticated = 1;
+                                printf("Successful login\n");
                                 // Store the working directory
                                 if (getcwd(client->working_directory, sizeof(client->working_directory)) != NULL) {
                                     send_reply(client->fd, "230 User logged in, proceed.\r\n");
-                                    printf("Client [%d] authenticated as user '%s' and changed to directory '%s'\n", 
-                                           client->fd, client->username_provided, client->working_directory);
                                 } else {
                                     perror("getcwd failed after chdir");
                                     client->authenticated = 0;
@@ -408,7 +396,7 @@ void handle_client_command(client_state_t *client) {
                     client->data_port = (p1 * 256) + p2;
                     client->port_cmd_received = 1; // Set the flag
 
-                    printf("Client [%d] Set PORT to %s:%d\n", client->fd, client->data_ip, client->data_port);
+                    printf("Port received: %d,%d,%d,%d,%d,%d\n", h1, h2, h3, h4, p1, p2);
                     send_reply(client->fd, "200 PORT command successful.\r\n");
                 }
             } else {
@@ -420,46 +408,38 @@ void handle_client_command(client_state_t *client) {
             if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before LIST).\r\n");
             } else {
-                // PORT command was received
                 send_reply(client->fd, "150 File status okay; about to open data connection.\r\n");
+                printf("File okay, beginning data connections\n");
+                printf("Connecting to Client Transfer Socket...\n");
                 
                 pid_t pid = fork();
                 if (pid < 0) {
                     perror("fork failed");
-                    send_reply(client->fd, "451 Requested action aborted: local error in processing (fork failed).\r\n");
-                    client->port_cmd_received = 0; // Reset port flag on error
+                    send_reply(client->fd, "451 Requested action aborted: local error in processing.\r\n");
+                    client->port_cmd_received = 0;
                 } else if (pid == 0) {
-                    // --- Child Process --- 
                     int data_sock = -1;
                     struct sockaddr_in data_conn_addr, client_data_addr;
 
-                    // Close listening socket (child doesn't need it)
-                    // close(listen_fd); // Need listen_fd passed or global
-                    // Close other client sockets? Recommended but omitted for simplicity
-
-                    // Create data socket
                     if ((data_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
                         perror("child socket failed");
-                        exit(EXIT_FAILURE); // Child exits on error
+                        exit(EXIT_FAILURE);
                     }
 
-                    // Bind data socket to port 20
                     memset(&data_conn_addr, 0, sizeof(data_conn_addr));
                     data_conn_addr.sin_family = AF_INET;
-                    data_conn_addr.sin_addr.s_addr = htonl(INADDR_ANY); // Or get specific server IP
+                    data_conn_addr.sin_addr.s_addr = htonl(INADDR_ANY);
                     data_conn_addr.sin_port = htons(DATA_PORT);
                     
-                    // Allow reuse of port 20 quickly
                     int optval = 1;
                     setsockopt(data_sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
                     
                     if (bind(data_sock, (struct sockaddr *)&data_conn_addr, sizeof(data_conn_addr)) < 0) {
-                        perror("child bind failed (Port 20)");
+                        perror("child bind failed");
                         close(data_sock);
                         exit(EXIT_FAILURE);
                     }
-                    
-                    // Prepare client address for connect
+
                     memset(&client_data_addr, 0, sizeof(client_data_addr));
                     client_data_addr.sin_family = AF_INET;
                     client_data_addr.sin_port = htons(client->data_port);
@@ -468,41 +448,36 @@ void handle_client_command(client_state_t *client) {
                         close(data_sock);
                         exit(EXIT_FAILURE);
                     }
-                    
-                    // Connect to the client's data port
-                    printf("CHILD: Connecting to %s:%d from port %d\n", client->data_ip, client->data_port, DATA_PORT);
+
                     if (connect(data_sock, (struct sockaddr *)&client_data_addr, sizeof(client_data_addr)) < 0) {
                         perror("child connect failed");
                         close(data_sock);
-                        exit(EXIT_FAILURE); // Child exits if connect fails
+                        exit(EXIT_FAILURE);
                     }
-                    
-                    printf("CHILD: Data connection established. Running ls -l.\n");
+                    printf("Connection Successful\n");
+                    printf("Listing directory\n");
 
-                    // Redirect stdout to the data socket
+                    // Redirect stdout to data socket
                     dup2(data_sock, STDOUT_FILENO);
-                    dup2(data_sock, STDERR_FILENO); // Redirect stderr too
-                    close(data_sock); // Close original descriptor after dup2
+                    close(data_sock);
 
-                    // Execute ls -l command
-                    // First change to the correct directory
+                    // Change to client's working directory and execute ls
                     if (chdir(client->working_directory) == 0) {
-                        execlp("ls", "ls", "-l", (char *)NULL);
+                        execlp("ls", "ls", (char *)NULL);
                     } else {
                         perror("chdir failed in LIST");
                         exit(EXIT_FAILURE);
                     }
                     
-                    // If execlp returns, it's an error
-                    perror("execlp ls failed");
-                    exit(EXIT_FAILURE); // Exit child on error
-
+                    exit(EXIT_FAILURE);
                 } else {
-                    // --- Parent Process --- 
-                    printf("PARENT: Forked child %d for LIST request from client [%d]\n", pid, client->fd);
-                    client->child_pid = pid; // Store child PID in client state
-                    client->port_cmd_received = 0; // Consume the PORT command flag
-                    // Parent continues in select loop, waiting for child termination
+                    // Parent Process
+                    client->child_pid = pid;
+                    client->port_cmd_received = 0;
+                    // Wait for child to finish before printing completion message
+                    int status;
+                    waitpid(pid, &status, 0);
+                    printf("226 Transfer complete\n");
                 }
             }
         }
@@ -828,10 +803,7 @@ void handle_child_termination(client_state_t clients[], int max_clients) {
     int status;
     pid_t pid;
 
-    // Check for any terminated child without blocking
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        printf("PARENT: Child process %d terminated.\n", pid);
-        // Find which client this child belonged to
         int client_index = -1;
         for (int i = 0; i < max_clients; ++i) {
             if (clients[i].child_pid == pid) {
@@ -842,35 +814,18 @@ void handle_child_termination(client_state_t clients[], int max_clients) {
 
         if (client_index != -1) {
             client_state_t *client = &clients[client_index];
-            printf("PARENT: Child %d belonged to client [%d].\n", pid, client->fd);
-            client->child_pid = -1; // Reset child PID for this client
+            client->child_pid = -1;
 
-            // Check child exit status (optional, but good for debugging)
-            if (WIFEXITED(status)) {
-                 printf("PARENT: Child %d exited normally with status %d.\n", pid, WEXITSTATUS(status));
-                 // If exited normally (status 0 usually means success), send 226
-                 if (WEXITSTATUS(status) == 0) {
-                    send_reply(client->fd, "226 Transfer complete.\r\n");
-                 } else {
-                     send_reply(client->fd, "451 Requested action aborted: local error in processing (Transfer failed).\r\n");
-                 }
-            } else if (WIFSIGNALED(status)) {
-                printf("PARENT: Child %d killed by signal %d.\n", pid, WTERMSIG(status));
-                send_reply(client->fd, "451 Requested action aborted: local error in processing (Transfer interrupted).\r\n");
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                send_reply(client->fd, "226 Transfer complete.\r\n");
             } else {
-                printf("PARENT: Child %d terminated abnormally.\n", pid);
-                send_reply(client->fd, "451 Requested action aborted: local error in processing (Unknown transfer error).\r\n");
+                send_reply(client->fd, "451 Requested action aborted: local error in processing.\r\n");
             }
-            // Reset port command received flag *after* transfer attempt is fully complete
-            // client->port_cmd_received = 0; // We reset this in the parent after fork now
-        } else {
-            printf("PARENT: Reaped child %d, but couldn't find corresponding client state.\n", pid);
         }
     }
     
-    // Handle error from waitpid, except for ECHILD (no children)
     if (pid < 0 && errno != ECHILD) {
-        perror("waitpid error in handle_child_termination");
+        perror("waitpid error");
     }
 }
 
