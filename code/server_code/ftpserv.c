@@ -608,14 +608,22 @@ void handle_client_command(client_state_t *client) {
 
                             printf("CHILD: Data connection established. Sending file: %s\n", filename);
 
-                            // Read from file and write to data socket
-                            while ((bytes_read = read(file_fd, data_buffer, sizeof(data_buffer))) > 0) {
-                                if (send(data_sock, data_buffer, bytes_read, 0) < 0) {
-                                    perror("child send failed");
-                                    close(file_fd);
-                                    close(data_sock);
-                                    exit(EXIT_FAILURE); // Exit child with error status
+                            // First change to the correct directory
+                            if (chdir(client->working_directory) == 0) {
+                                // Read from file and write to data socket
+                                while ((bytes_read = read(file_fd, data_buffer, sizeof(data_buffer))) > 0) {
+                                    if (send(data_sock, data_buffer, bytes_read, 0) < 0) {
+                                        perror("child send failed");
+                                        close(file_fd);
+                                        close(data_sock);
+                                        exit(EXIT_FAILURE); // Exit child with error status
+                                    }
                                 }
+                            } else {
+                                perror("chdir failed in RETR");
+                                close(file_fd);
+                                close(data_sock);
+                                exit(EXIT_FAILURE);
                             }
 
                             if (bytes_read < 0) {
