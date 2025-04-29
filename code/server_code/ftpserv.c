@@ -418,6 +418,7 @@ void handle_client_command(client_state_t *client) {
                     send_reply(client->fd, "451 Requested action aborted: local error in processing.\r\n");
                     client->port_cmd_received = 0;
                 } else if (pid == 0) {
+                    // Child Process
                     int data_sock = -1;
                     struct sockaddr_in data_conn_addr, client_data_addr;
 
@@ -474,10 +475,18 @@ void handle_client_command(client_state_t *client) {
                     // Parent Process
                     client->child_pid = pid;
                     client->port_cmd_received = 0;
-                    // Wait for child to finish before printing completion message
+                    
+                    // Wait for child to finish
                     int status;
                     waitpid(pid, &status, 0);
-                    printf("226 Transfer complete\n");
+                    client->child_pid = -1;  // Reset child PID after it's done
+                    
+                    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                        printf("226 Transfer complete\n");
+                        send_reply(client->fd, "226 Transfer complete.\r\n");
+                    } else {
+                        send_reply(client->fd, "451 Requested action aborted: local error in processing.\r\n");
+                    }
                 }
             }
         }
