@@ -1,3 +1,18 @@
+/*
+ * ftpserv.c - Simple FTP-like server for file transfer and directory operations.
+ * 
+ * This server handles multiple clients using select() and supports basic FTP commands:
+ * USER, PASS, LIST, CWD, PWD, STOR, RETR, QUIT, and PORT.
+ * 
+ * Each client is authenticated and operates in their own directory.
+ * Data transfers (LIST, RETR, STOR) use a separate data connection, following the FTP protocol.
+ * 
+ * Rationale:
+ * - select() is used for handling multiple clients efficiently in a single process.
+ * - Forking is used for data transfers to avoid blocking the main server loop.
+ * - Temporary files are used in STOR to ensure incomplete uploads do not overwrite existing files.
+ * - Per-client state is tracked in a struct for clarity and scalability.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +78,13 @@ int load_users(const char* filename); // Prototype for user loading function
 // Global array to store client states
 client_state_t clients[MAX_CLIENTS];
 
-int main(int argc, char *argv[]) {
+/*
+ * main - Entry point for the FTP server.
+ * Sets up the listening socket, loads user credentials, and enters the main loop.
+ * Uses select() to handle multiple clients and forks for data transfers.
+ * Rationale: select() allows scalable, non-blocking handling of many clients.
+ */
+int main() {
     // Remove initial startup messages
     if (getcwd(server_root, sizeof(server_root)) == NULL) {
         perror("getcwd failed for server root");
@@ -226,7 +247,11 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// Function to send a reply to the client
+/*
+ * send_reply - Sends a response message to the client.
+ * Used for all server-client communication on the control connection.
+ * Rationale: Centralizes reply logic for easier maintenance and debugging.
+ */
 void send_reply(int client_fd, const char *message) {
     if (send(client_fd, message, strlen(message), 0) < 0) {
         perror("send failed");
@@ -248,7 +273,13 @@ char *trim_whitespace(char *str) {
     return str;
 }
 
-// Function to handle commands from a client
+/*
+ * handle_client_command - Parses and executes commands from a single client.
+ * Handles authentication, directory navigation, file transfers, and local commands.
+ * Rationale: Each command is handled in a modular way for clarity.
+ * Forking is used for data transfers to keep the main server responsive.
+ * PORT command is required before any data transfer to follow FTP protocol.
+ */
 void handle_client_command(client_state_t *client) {
     char buffer[BUFFER_SIZE];
     char command[BUFFER_SIZE];
@@ -257,38 +288,32 @@ void handle_client_command(client_state_t *client) {
 
     if (valread > 0) {
         buffer[valread] = '\0';
-        // Remove the connection established message from here since it's now in accept()
-
-        // Basic command parsing (split command and argument)
+        // Parse the command and argument from the client input
         char *raw_command = buffer;
         char *raw_argument = "";
         char *space = strchr(buffer, ' ');
         if (space != NULL) {
-            *space = '\0'; // Null-terminate the command part
+            *space = '\0'; // Split command and argument
             raw_argument = space + 1;
         }
-
         // Copy and trim command and argument
         strncpy(command, raw_command, sizeof(command) - 1);
         command[sizeof(command) - 1] = '\0';
         strncpy(argument, raw_argument, sizeof(argument) - 1);
         argument[sizeof(argument) - 1] = '\0';
-
         char *trimmed_cmd = trim_whitespace(command);
         char *trimmed_arg = trim_whitespace(argument);
 
-        // Reset port command flag before processing any command
-        // This ensures PORT is only valid for the *next* data transfer command
-        // client->port_cmd_received = 0; // Let's rethink this - maybe only reset *after* data transfer?
-
-        // Handle commands
+        // --- USER command: handle username input ---
         if (strcasecmp(trimmed_cmd, "USER") == 0) {
+            // If already logged in, do not allow another USER command
             if (client->authenticated) {
                 send_reply(client->fd, "530 Already logged in.\r\n");
             } else if (strlen(trimmed_arg) == 0) {
+                // No username provided
                 send_reply(client->fd, "501 Syntax error in parameters or arguments (Missing username).\r\n");
             } else {
-                // Check against loaded users
+                // Check if username exists in loaded users
                 int user_found = 0;
                 for (int i = 0; i < num_loaded_users; ++i) {
                     if (strcmp(trimmed_arg, loaded_users[i].username) == 0) {
@@ -305,37 +330,34 @@ void handle_client_command(client_state_t *client) {
                      send_reply(client->fd, "530 Not logged in (Unknown user).\r\n");
                 }
             }
-        } else if (strcasecmp(trimmed_cmd, "PASS") == 0) {
+        }
+        // --- PASS command: handle password input and authentication ---
+        else if (strcasecmp(trimmed_cmd, "PASS") == 0) {
             if (client->authenticated) {
                 send_reply(client->fd, "202 Command not implemented, superfluous at this site (already logged in).\r\n");
             } else if (client->username_provided[0] == '\0') {
+                // Must send USER before PASS
                 send_reply(client->fd, "503 Bad sequence of commands (USER first).\r\n");
             } else if (strlen(trimmed_arg) == 0) {
                  send_reply(client->fd, "501 Syntax error in parameters or arguments (Missing password).\r\n");
             } else {
-                // Check password against loaded user
+                // Check password for the given username
                 int password_correct = 0;
                  for (int i = 0; i < num_loaded_users; ++i) {
-                     // Find the matching username provided earlier
                      if (strcmp(client->username_provided, loaded_users[i].username) == 0) {
-                         // Check the password
                          if (strcmp(trimmed_arg, loaded_users[i].password) == 0) {
                              password_correct = 1;
                          }
-                         break; // Found the user entry, no need to check further
+                         break;
                      }
                  }
-
                 if (password_correct) {
-                    // First change back to the server root directory
+                    // Change to the user's directory after successful login
                     if (chdir(server_root) == 0) {
-                        // Then change to the server directory
                         if (chdir("server") == 0) {
-                            // Finally try to change to the user's directory
                             if (chdir(client->username_provided) == 0) {
                                 client->authenticated = 1;
                                 printf("Successful login\n");
-                                // Store the working directory
                                 if (getcwd(client->working_directory, sizeof(client->working_directory)) != NULL) {
                                     send_reply(client->fd, "230 User logged in, proceed.\r\n");
                                 } else {
@@ -363,47 +385,45 @@ void handle_client_command(client_state_t *client) {
                         send_reply(client->fd, "530 Server root directory not found.\r\n");
                     }
                 } else {
-                    // Wrong password or user disappeared between USER/PASS?
+                    // Wrong password
                     client->authenticated = 0;
-                    client->username_provided[0] = '\0'; // Reset state, require USER again
+                    client->username_provided[0] = '\0';
                     send_reply(client->fd, "530 Not logged in (Password incorrect or User invalid).\r\n");
                 }
             }
-        } else if (strcasecmp(trimmed_cmd, "QUIT") == 0) {
+        }
+        // --- QUIT command: close the connection ---
+        else if (strcasecmp(trimmed_cmd, "QUIT") == 0) {
             printf("Client [%d] requested QUIT.\n", client->fd);
             send_reply(client->fd, "221 Service closing control connection.\r\n");
             close(client->fd);
             client->fd = -1; // Mark slot as free
-            return; // Important: client struct is invalid after QUIT processing
+            return; // Client struct is invalid after QUIT
         }
-        // --- Check authentication for all subsequent commands --- 
+        // --- Require authentication for all other commands ---
         else if (!client->authenticated) {
             send_reply(client->fd, "530 Not logged in.\r\n");
         }
-        // --- Authenticated commands --- 
+        // --- PORT command: receive client's data port for file transfer ---
         else if (strcasecmp(trimmed_cmd, "PORT") == 0) {
             int h1, h2, h3, h4, p1, p2;
-            // Expected format: h1,h2,h3,h4,p1,p2
+            // Parse the IP and port from the argument
             if (sscanf(trimmed_arg, "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) == 6) {
-                // Basic validation of numbers (0-255)
                 if (h1 < 0 || h1 > 255 || h2 < 0 || h2 > 255 || h3 < 0 || h3 > 255 || h4 < 0 || h4 > 255 ||
                     p1 < 0 || p1 > 255 || p2 < 0 || p2 > 255) {
                     send_reply(client->fd, "501 Syntax error in parameters or arguments (Invalid host/port format).\r\n");
                 } else {
-                    // Format the IP address string
                     snprintf(client->data_ip, sizeof(client->data_ip), "%d.%d.%d.%d", h1, h2, h3, h4);
-                    // Calculate the port number
                     client->data_port = (p1 * 256) + p2;
                     client->port_cmd_received = 1; // Set the flag
-
                     printf("Port received: %d,%d,%d,%d,%d,%d\n", h1, h2, h3, h4, p1, p2);
                     send_reply(client->fd, "200 PORT command successful.\r\n");
                 }
             } else {
-                // Parsing failed
                 send_reply(client->fd, "501 Syntax error in parameters or arguments (Cannot parse PORT arguments).\r\n");
             }
         }
+        // --- LIST command: send directory listing over data connection ---
         else if (strcasecmp(trimmed_cmd, "LIST") == 0) {
             if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before LIST).\r\n");
@@ -490,6 +510,7 @@ void handle_client_command(client_state_t *client) {
                 }
             }
         }
+        // --- PWD command: print current working directory ---
         else if (strcasecmp(trimmed_cmd, "PWD") == 0) {
             char reply[BUFFER_SIZE];
             // Get the path relative to the user's directory
@@ -505,6 +526,7 @@ void handle_client_command(client_state_t *client) {
             }
             send_reply(client->fd, reply);
         }
+        // --- CWD command: change working directory ---
         else if (strcasecmp(trimmed_cmd, "CWD") == 0) {
              if (strlen(trimmed_arg) == 0) {
                  send_reply(client->fd, "501 Syntax error in parameters or arguments (Missing directory).\r\n");
@@ -526,7 +548,7 @@ void handle_client_command(client_state_t *client) {
                  }
              }
         }
-        // --- Add RETR Handler --- 
+        // --- RETR command: send file to client ---
         else if (strcasecmp(trimmed_cmd, "RETR") == 0) {
             if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before RETR).\r\n");
@@ -635,7 +657,7 @@ void handle_client_command(client_state_t *client) {
                 }
             }
         }
-        // --- Add STOR Handler --- 
+        // --- STOR command: receive file from client ---
         else if (strcasecmp(trimmed_cmd, "STOR") == 0) {
              if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before STOR).\r\n");
@@ -782,7 +804,6 @@ void handle_client_command(client_state_t *client) {
         else {
             send_reply(client->fd, "502 Command not implemented.\r\n");
         }
-
     } else if (valread == 0) {
         // Client disconnected gracefully
         printf("Client [%d] disconnected.\n", client->fd);
@@ -807,7 +828,11 @@ void handle_client_command(client_state_t *client) {
     }
 }
 
-// Function to check for and handle terminated child processes
+/*
+ * handle_child_termination - Checks for and cleans up terminated child processes.
+ * Sends completion or error messages to clients after data transfers.
+ * Rationale: Ensures resources are freed and clients are notified of transfer results.
+ */
 void handle_child_termination(client_state_t clients[], int max_clients) {
     int status;
     pid_t pid;
@@ -838,7 +863,11 @@ void handle_child_termination(client_state_t clients[], int max_clients) {
     }
 }
 
-// Function to load users from a file
+/*
+ * load_users - Loads user credentials from a CSV file.
+ * Each line should be 'username,password'.
+ * Rationale: Allows easy management of user accounts and supports multiple users.
+ */
 int load_users(const char* filename) {
     FILE *file = fopen(filename, "r");
     if (file == NULL) {

@@ -1,3 +1,18 @@
+/*
+ * ftpcli.c - Simple FTP-like client for interacting with the custom FTP server.
+ *
+ * This client connects to the server, authenticates the user, and supports basic FTP commands:
+ * USER, PASS, LIST, CWD, PWD, STOR, RETR, QUIT, and PORT.
+ *
+ * The client can also run some commands locally (prefixed with '!').
+ * Data transfers (LIST, RETR, STOR) use a separate data connection, following the FTP protocol.
+ *
+ * Rationale:
+ * - The client provides a user-friendly interface for sending commands and receiving responses.
+ * - Data connections are set up as needed for file transfers, matching FTP protocol.
+ * - Local commands allow the user to interact with their own filesystem easily.
+ * - Code is modular, with clear separation of command parsing, data connection setup, and file operations.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +39,11 @@ void print_client_usage();
 // Global variable to store the data listening socket
 int data_listen_fd = -1; // Initialize to invalid
 
+/*
+ * main - Entry point for the FTP client.
+ * Connects to the server, handles user input, and processes commands in a loop.
+ * Rationale: Keeps the client interactive and responsive, handling both server and local commands.
+ */
 int main(int argc, char *argv[]) {
     int sock_fd;
     struct sockaddr_in server_addr;
@@ -405,7 +425,10 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// Helper function to get the local IP address and port associated with a connected socket
+/*
+ * get_local_ip_and_port - Gets the local IP address and port for the control connection.
+ * Rationale: Used to construct the PORT command for the server, enabling data connections.
+ */
 int get_local_ip_and_port(int sock_fd, char *ip_str, size_t ip_str_len, int *port) {
     struct sockaddr_storage local_addr;
     socklen_t addr_len = sizeof(local_addr);
@@ -435,7 +458,11 @@ int get_local_ip_and_port(int sock_fd, char *ip_str, size_t ip_str_len, int *por
     return 0;
 }
 
-// Creates a listening socket for the data connection, gets the port, and formats the PORT command
+/*
+ * setup_data_connection - Prepares a data socket and sends the PORT command to the server.
+ * Returns the socket descriptor for the data connection.
+ * Rationale: Follows FTP protocol for active mode data transfers, allowing the server to connect back for file operations.
+ */
 int setup_data_connection(int control_sock_fd, int *p_data_listen_fd, char *port_cmd_buf, size_t port_cmd_buf_size) {
     struct sockaddr_in data_addr;
     int listen_fd;
@@ -499,7 +526,10 @@ int setup_data_connection(int control_sock_fd, int *p_data_listen_fd, char *port
     return 0;
 }
 
-// Function to read a full reply from the server (handles multi-line replies)
+/*
+ * read_reply - Reads a reply from the server control connection.
+ * Rationale: Centralizes reply reading for easier error handling and debugging.
+ */
 int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
     memset(reply_buffer, 0, buffer_size);
     int total_bytes_read = 0;
@@ -535,6 +565,10 @@ int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
     return total_bytes_read;
 }
 
+/*
+ * print_client_usage - Prints instructions for using the client.
+ * Rationale: Helps users understand available commands and usage.
+ */
 void print_client_usage() {
     printf("Hello!! Please Authenticate to run server commands\n");
     printf("1. type \"USER\" followed by a space and your username\n");

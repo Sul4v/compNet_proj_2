@@ -11,8 +11,9 @@ CLIENT_SRC = code/client_code/ftpcli.c
 SERVER_SRC = code/server_code/ftpserv.c
 
 # Object files
-CLIENT_OBJS = $(CLIENT_SRC:.c=.o)
-SERVER_OBJS = $(SERVER_SRC:.c=.o)
+OBJDIR = build
+CLIENT_OBJS = $(OBJDIR)/ftpcli.o
+SERVER_OBJS = $(OBJDIR)/ftpserv.o
 
 .PHONY: all clean client server
 
@@ -28,9 +29,14 @@ $(CLIENT_BIN): $(CLIENT_OBJS)
 $(SERVER_BIN): $(SERVER_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-# Rule to compile .c files to .o files
-%.o: %.c
+$(OBJDIR)/ftpcli.o: code/client_code/ftpcli.c
+	mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/ftpserv.o: code/server_code/ftpserv.c
+	mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(CLIENT_BIN) $(SERVER_BIN) $(CLIENT_OBJS) $(SERVER_OBJS) core.* 
+	rm -f $(CLIENT_BIN) $(SERVER_BIN) $(CLIENT_OBJS) $(SERVER_OBJS) core.*
+	rm -rf $(OBJDIR) 
