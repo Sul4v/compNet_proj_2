@@ -85,7 +85,14 @@ client_state_t clients[MAX_CLIENTS];
  * Rationale: select() allows scalable, non-blocking handling of many clients.
  */
 int main() {
-    // Remove initial startup messages
+    // This FTP server uses a multi-client architecture with the following components:
+    // 1. Socket creation and binding to port 21 (control connection)
+    // 2. User authentication using credentials from users.csv
+    // 3. Command processing in a main select() loop for handling multiple clients
+    // 4. Data transfers using forked child processes on port 20 (data connection)
+    // 5. Support for standard FTP commands: USER, PASS, CWD, PWD, LIST, RETR, STOR, etc.
+    
+    // Get server root directory
     if (getcwd(server_root, sizeof(server_root)) == NULL) {
         perror("getcwd failed for server root");
         exit(EXIT_FAILURE);
@@ -386,6 +393,7 @@ void handle_client_command(client_state_t *client) {
                     }
                 } else {
                     // Wrong password
+                    printf("Incorrect password attempt for user [%s]\n", client->username_provided);
                     client->authenticated = 0;
                     client->username_provided[0] = '\0';
                     send_reply(client->fd, "530 Not logged in (Password incorrect or User invalid).\r\n");
@@ -401,10 +409,15 @@ void handle_client_command(client_state_t *client) {
             return; // Client struct is invalid after QUIT
         }
         // --- Require authentication for all other commands ---
+        // This check ensures that all commands below this point require a successful login
         else if (!client->authenticated) {
             send_reply(client->fd, "530 Not logged in.\r\n");
         }
         // --- PORT command: receive client's data port for file transfer ---
+        // In FTP active mode, the client tells the server which IP and port to connect 
+        // to for data transfers. The PORT command format is: PORT h1,h2,h3,h4,p1,p2
+        // where h1-h4 form the IP address and p1,p2 are used to calculate the port number.
+        // Example: "PORT 127,0,0,1,23,45" means connect to 127.0.0.1 port 23*256+45 = 5933
         else if (strcasecmp(trimmed_cmd, "PORT") == 0) {
             int h1, h2, h3, h4, p1, p2;
             // Parse the IP and port from the argument
@@ -413,9 +426,10 @@ void handle_client_command(client_state_t *client) {
                     p1 < 0 || p1 > 255 || p2 < 0 || p2 > 255) {
                     send_reply(client->fd, "501 Syntax error in parameters or arguments (Invalid host/port format).\r\n");
                 } else {
+                    // Store the client's data connection info for future use by LIST, RETR, or STOR
                     snprintf(client->data_ip, sizeof(client->data_ip), "%d.%d.%d.%d", h1, h2, h3, h4);
-                    client->data_port = (p1 * 256) + p2;
-                    client->port_cmd_received = 1; // Set the flag
+                    client->data_port = (p1 * 256) + p2; // Port number calculation (high byte * 256 + low byte)
+                    client->port_cmd_received = 1; // Set the flag that PORT has been received
                     printf("Port received: %d,%d,%d,%d,%d,%d\n", h1, h2, h3, h4, p1, p2);
                     send_reply(client->fd, "200 PORT command successful.\r\n");
                 }
@@ -424,6 +438,10 @@ void handle_client_command(client_state_t *client) {
             }
         }
         // --- LIST command: send directory listing over data connection ---
+        // This command sends a directory listing to the client over the data connection.
+        // It requires a prior successful PORT command to know where to connect.
+        // The server forks a child process which connects to the client's data port,
+        // redirects stdout to the data socket, and runs the 'ls' command.
         else if (strcasecmp(trimmed_cmd, "LIST") == 0) {
             if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before LIST).\r\n");
@@ -519,10 +537,10 @@ void handle_client_command(client_state_t *client) {
                 // Add trailing slash
                 char dir_with_slash[PATH_MAX];
                 snprintf(dir_with_slash, sizeof(dir_with_slash), "%s/", user_dir);
-                snprintf(reply, sizeof(reply), "257 \"%s\" is current directory.\r\n", dir_with_slash);
+                snprintf(reply, sizeof(reply), "257 %s \r\n", dir_with_slash);
             } else {
                 // Fallback to just the username if we can't find the path
-                snprintf(reply, sizeof(reply), "257 \"%s/\" is current directory.\r\n", client->username_provided);
+                snprintf(reply, sizeof(reply), "257 %s/ \r\n", client->username_provided);
             }
             send_reply(client->fd, reply);
         }
@@ -534,7 +552,7 @@ void handle_client_command(client_state_t *client) {
                  if (chdir(trimmed_arg) == 0) {
                      // Update the working directory
                      if (getcwd(client->working_directory, sizeof(client->working_directory)) != NULL) {
-                         printf("Client [%d] changed directory to: %s\n", client->fd, client->working_directory);
+                         printf("Changing directory to: %s\n", trimmed_arg);
                          send_reply(client->fd, "200 Directory changed successfully.\r\n");
                      } else {
                          perror("getcwd failed after chdir");
@@ -549,6 +567,10 @@ void handle_client_command(client_state_t *client) {
              }
         }
         // --- RETR command: send file to client ---
+        // This command allows the client to download a file from the server.
+        // It first checks if the file exists and has proper permissions.
+        // Then it sends the file over the data connection established with PORT.
+        // The transfer happens in a child process while the parent continues handling commands.
         else if (strcasecmp(trimmed_cmd, "RETR") == 0) {
             if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before RETR).\r\n");
@@ -578,8 +600,7 @@ void handle_client_command(client_state_t *client) {
                         // File opened successfully, proceed with transfer
                         char reply[BUFFER_SIZE];
                         snprintf(reply, sizeof(reply),
-                                 "150 Opening BINARY mode data connection for %s (%lld bytes).\r\n",
-                                 filename, (long long)file_stat.st_size); // Send file size
+                                 "150 File status okay; about to open data connection.\r\n");
                         send_reply(client->fd, reply);
 
                         pid_t pid = fork();
@@ -608,11 +629,9 @@ void handle_client_command(client_state_t *client) {
                             memset(&client_data_addr, 0, sizeof(client_data_addr));
                             client_data_addr.sin_family = AF_INET;
                             client_data_addr.sin_port = htons(client->data_port);
-                            if (inet_pton(AF_INET, client->data_ip, &client_data_addr.sin_addr) <= 0) { perror("child inet_pton"); close(file_fd); close(data_sock); exit(1); }
-                            printf("CHILD: Connecting to %s:%d from port %d for RETR\n", client->data_ip, client->data_port, DATA_PORT);
-                            if (connect(data_sock, (struct sockaddr *)&client_data_addr, sizeof(client_data_addr)) < 0) { perror("child connect"); close(file_fd); close(data_sock); exit(1); }
+                            if (inet_pton(AF_INET, client->data_ip, &client_data_addr.sin_addr) <= 0) { perror("child inet_pton failed"); close(file_fd); close(data_sock); exit(1); }
+                            if (connect(data_sock, (struct sockaddr *)&client_data_addr, sizeof(client_data_addr)) < 0) { perror("child connect failed"); close(file_fd); close(data_sock); exit(1); }
 
-                            printf("CHILD: Data connection established. Sending file: %s\n", filename);
 
                             // First change to the correct directory
                             if (chdir(client->working_directory) == 0) {
@@ -640,14 +659,12 @@ void handle_client_command(client_state_t *client) {
                             }
 
                             // Finished sending file
-                            printf("CHILD: Finished sending file. Closing data connection.\n");
                             close(file_fd);   // Close file
                             close(data_sock); // Close data socket (signals EOF to client)
                             exit(EXIT_SUCCESS); // Exit child successfully
 
                         } else {
                             // --- Parent Process --- 
-                             printf("PARENT: Forked child %d for RETR request from client [%d]\n", pid, client->fd);
                             close(file_fd); // Close file descriptor in parent
                             client->child_pid = pid; // Store child PID
                             client->port_cmd_received = 0; // Consume the PORT command flag
@@ -658,6 +675,10 @@ void handle_client_command(client_state_t *client) {
             }
         }
         // --- STOR command: receive file from client ---
+        // This command allows the client to upload a file to the server.
+        // It creates a temporary file first, receives the data into it,
+        // and then renames it to the final filename only if the transfer is successful.
+        // This approach provides atomicity - either the whole file is transferred or none of it.
         else if (strcasecmp(trimmed_cmd, "STOR") == 0) {
              if (!client->port_cmd_received) {
                 send_reply(client->fd, "503 Bad sequence of commands (PORT required before STOR).\r\n");
@@ -682,7 +703,7 @@ void handle_client_command(client_state_t *client) {
                      client->port_cmd_received = 0; // Reset flag
                 } else {
                      // Temp file opened successfully, proceed
-                     send_reply(client->fd, "150 Ok to send data.\r\n");
+                     send_reply(client->fd, "150 File status okay; about to open data connection.\r\n");
 
                      pid_t pid = fork();
                      if (pid < 0) {
@@ -711,11 +732,9 @@ void handle_client_command(client_state_t *client) {
                         memset(&client_data_addr, 0, sizeof(client_data_addr));
                         client_data_addr.sin_family = AF_INET;
                         client_data_addr.sin_port = htons(client->data_port);
-                        if (inet_pton(AF_INET, client->data_ip, &client_data_addr.sin_addr) <= 0) { perror("child inet_pton"); close(temp_fd); remove(temp_filename); close(data_sock); exit(1); }
-                        printf("CHILD: Connecting to %s:%d from port %d for STOR\n", client->data_ip, client->data_port, DATA_PORT);
-                        if (connect(data_sock, (struct sockaddr *)&client_data_addr, sizeof(client_data_addr)) < 0) { perror("child connect"); close(temp_fd); remove(temp_filename); close(data_sock); exit(1); }
+                        if (inet_pton(AF_INET, client->data_ip, &client_data_addr.sin_addr) <= 0) { perror("child inet_pton failed"); close(temp_fd); remove(temp_filename); close(data_sock); exit(1); }
+                        if (connect(data_sock, (struct sockaddr *)&client_data_addr, sizeof(client_data_addr)) < 0) { perror("child connect failed"); close(temp_fd); remove(temp_filename); close(data_sock); exit(1); }
 
-                        printf("CHILD: Data connection established. Receiving file to %s\n", temp_filename);
 
                         // Read from data socket and write to temp file
                         while ((bytes_read = read(data_sock, data_buffer, sizeof(data_buffer))) > 0) {
@@ -732,13 +751,11 @@ void handle_client_command(client_state_t *client) {
                         }
 
                         // Finished receiving data
-                        printf("CHILD: Finished receiving data. Closing data connection.\n");
                         close(temp_fd);   // Close temp file
                         close(data_sock); // Close data socket
 
                         if (success) {
                             // Rename temp file to target filename
-                            printf("CHILD: Renaming %s to %s\n", temp_filename, target_filename);
                             if (rename(temp_filename, target_filename) < 0) {
                                 perror("child rename failed");
                                 remove(temp_filename); // Clean up if rename failed
@@ -748,15 +765,12 @@ void handle_client_command(client_state_t *client) {
                             }
                         } else {
                             // Transfer failed, clean up temp file and exit with error
-                            printf("CHILD: Transfer failed. Removing temporary file %s\n", temp_filename);
                             remove(temp_filename);
                             exit(EXIT_FAILURE);
                         }
 
                     } else {
                         // --- Parent Process --- 
-                        printf("PARENT: Forked child %d for STOR request to %s (temp: %s) from client [%d]\n", 
-                               pid, target_filename, temp_filename, client->fd);
                         close(temp_fd); // Close temp file descriptor in parent
                         client->child_pid = pid; // Store child PID
                         client->port_cmd_received = 0; // Consume the PORT command flag
@@ -782,13 +796,13 @@ void handle_client_command(client_state_t *client) {
             }
         }
         else if (strcasecmp(trimmed_cmd, "!list") == 0 || strcasecmp(trimmed_cmd, "!LIST") == 0) {
-            // Execute ls -l command locally
+            // Execute ls command locally (no -l flag) for simple filename listing
             pid_t pid = fork();
             if (pid < 0) {
                 perror("fork failed for !list");
             } else if (pid == 0) {
-                // Child process
-                execlp("ls", "ls", "-l", (char *)NULL);
+                // Child process: run plain ls for simple output
+                execlp("ls", "ls", (char *)NULL);
                 // If execlp returns, it's an error
                 perror("execlp ls failed");
                 exit(EXIT_FAILURE);
@@ -865,8 +879,22 @@ void handle_child_termination(client_state_t clients[], int max_clients) {
 
 /*
  * load_users - Loads user credentials from a CSV file.
- * Each line should be 'username,password'.
- * Rationale: Allows easy management of user accounts and supports multiple users.
+ * Each line should be 'username,password' without spaces around the comma.
+ * The function checks for malformed lines and enforces maximum length limits.
+ * 
+ * File Format: 
+ *   - One user per line in the format: username,password
+ *   - No spaces around the comma separator
+ *   - Lines with empty username or password are skipped
+ *   - Comments are not supported
+ * 
+ * Authentication Flow:
+ *   1. User provides username with USER command
+ *   2. User provides password with PASS command
+ *   3. Server checks credentials against loaded users
+ *   4. If credentials match, user is authenticated
+ *
+ * Returns: Number of users successfully loaded, or -1 on error
  */
 int load_users(const char* filename) {
     FILE *file = fopen(filename, "r");

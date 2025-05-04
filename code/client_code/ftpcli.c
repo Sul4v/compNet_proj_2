@@ -115,7 +115,7 @@ int main(int argc, char *argv[]) {
             data_listen_fd = -1;
         }
 
-        printf("ftp> ");
+        printf("");
         fflush(stdout);
 
         if (fgets(user_input, sizeof(user_input), stdin) == NULL) {
@@ -191,16 +191,14 @@ int main(int argc, char *argv[]) {
                 if (pid < 0) {
                     // perror("fork failed for local LIST");
                 } else if (pid == 0) {
-                    printf("Connecting to Client Transfer Socket...\n");
-                    printf("Connection Successful\n");
-                    printf("Listing directory\n");
-                    execlp("ls", "ls", "-l", (char *)NULL);
-                    // perror("execlp ls failed");
+                    // Use ls -1 to list files one per line without additional details
+                    execlp("ls", "ls", "-1", (char *)NULL);
+                    // If execlp returns, it's an error
                     exit(EXIT_FAILURE);
                 } else {
                     int status;
                     waitpid(pid, &status, 0);
-                    printf("226 Transfer complete\n");
+                    // Don't print Transfer complete message
                 }
             } else {
                 // fprintf(stderr, "Unknown local command: %s\n", local_cmd);
@@ -278,6 +276,11 @@ int main(int argc, char *argv[]) {
         buffer[bytes_received] = '\0';
         printf("%s", buffer);
 
+        // Check for incorrect password message
+        if (strncasecmp(command_to_send, "PASS", 4) == 0 && 
+            strstr(buffer, "530 Not logged in") != NULL) {
+        }
+
         // If the command was one that initiated data transfer AND
         // the server sent a positive preliminary reply (e.g., 150), 
         // then we need to accept the connection and handle the data transfer.
@@ -309,13 +312,19 @@ int main(int argc, char *argv[]) {
                     if (data_bytes_read < 0) { perror("read (LIST data) failed"); }
 
                 } else if (strcasecmp(original_command, "RETR") == 0) {
-                    // --- Handle RETR data --- 
+                    // --- RETR command: Download a file from the server ---
+                    // This command downloads a file from the server to the local system.
+                    // The process involves:
+                    // 1. Setting up a data connection (via PORT command)
+                    // 2. Sending the RETR command with the remote filename
+                    // 3. Opening a local file to write the downloaded data
+                    // 4. Accepting a connection from the server on the data port
+                    // 5. Reading data from the server and writing to the local file
                     char *local_filename = original_argument; // Use argument parsed earlier
                     if (strlen(local_filename) == 0) {
                         fprintf(stderr, "Error: Filename missing for RETR.\n");
                         // No local file to open, but need to drain/close data socket
                     } else {
-                        printf("Receiving file: %s\n", local_filename);
                         // Open local file for writing (Create if not exists, Truncate if exists)
                         int local_fd = open(local_filename, O_WRONLY | O_CREAT | O_TRUNC, 0644); // Permissions rw-r--r--
                         if (local_fd < 0) {
@@ -327,7 +336,6 @@ int main(int argc, char *argv[]) {
                             ssize_t data_bytes_read;
                             ssize_t bytes_written;
                             char data_buffer[BUFFER_SIZE];
-                            long long total_bytes_received = 0;
                             while ((data_bytes_read = read(data_sock_fd, data_buffer, sizeof(data_buffer))) > 0) {
                                 bytes_written = write(local_fd, data_buffer, data_bytes_read);
                                 if (bytes_written < 0) {
@@ -338,9 +346,7 @@ int main(int argc, char *argv[]) {
                                      fprintf(stderr, "Warning: Short write to local file %s.\n", local_filename);
                                      // Potentially handle partial writes more robustly? Loop write?
                                 }
-                                total_bytes_received += bytes_written;
                             }
-                            printf("Finished receiving file: %s (%lld bytes)\n", local_filename, total_bytes_received);
 
                             if (data_bytes_read < 0) { perror("read (RETR data) failed"); }
                             
@@ -351,13 +357,19 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 } else if (strcasecmp(original_command, "STOR") == 0) {
-                    // --- Handle STOR data --- 
+                    // --- STOR command: Upload a file to the server ---
+                    // This command uploads a local file to the server.
+                    // The process involves:
+                    // 1. Setting up a data connection (via PORT command)
+                    // 2. Sending the STOR command with the filename to create on the server
+                    // 3. Opening the local file to read the data
+                    // 4. Accepting a connection from the server on the data port
+                    // 5. Reading from the local file and sending data to the server
                     char *local_filename = original_argument; // Use argument parsed earlier
                     if (strlen(local_filename) == 0) {
                         fprintf(stderr, "Error: Filename missing for STOR.\n");
                         // Need to close data socket even if no file sent
                     } else {
-                        printf("Sending file: %s\n", local_filename);
                         // Open local file for reading
                         int local_fd = open(local_filename, O_RDONLY);
                         if (local_fd < 0) {
@@ -369,7 +381,6 @@ int main(int argc, char *argv[]) {
                             ssize_t bytes_read;
                             ssize_t bytes_sent;
                             char data_buffer[BUFFER_SIZE];
-                            long long total_bytes_sent = 0;
                             while ((bytes_read = read(local_fd, data_buffer, sizeof(data_buffer))) > 0) {
                                 bytes_sent = send(data_sock_fd, data_buffer, bytes_read, 0);
                                 if (bytes_sent < 0) {
@@ -380,9 +391,7 @@ int main(int argc, char *argv[]) {
                                      fprintf(stderr, "Warning: Short send for STOR data (sent %zd / %zd).\n", bytes_sent, bytes_read);
                                      // Potentially handle partial sends more robustly? Loop send?
                                 }
-                                total_bytes_sent += bytes_sent;
                             }
-                            printf("Finished sending file: %s (%lld bytes)\n", local_filename, total_bytes_sent);
 
                             if (bytes_read < 0) { perror("read (local file for STOR) failed"); }
                             
@@ -459,9 +468,18 @@ int get_local_ip_and_port(int sock_fd, char *ip_str, size_t ip_str_len, int *por
 }
 
 /*
- * setup_data_connection - Prepares a data socket and sends the PORT command to the server.
- * Returns the socket descriptor for the data connection.
- * Rationale: Follows FTP protocol for active mode data transfers, allowing the server to connect back for file operations.
+ * setup_data_connection - Establishes a data connection for file transfers.
+ * 
+ * This function implements the FTP active mode data connection:
+ * 1. Creates a listening socket on a random port
+ * 2. Gets the local IP address and assigned port number
+ * 3. Formats and sends a PORT command to the server with this information
+ * 4. The server will later connect to this port for data transfer
+ * 
+ * The PORT command format is: PORT h1,h2,h3,h4,p1,p2
+ * where h1-h4 are the IP address octets and p1,p2 encode the port number (port = p1*256 + p2)
+ * 
+ * Returns: 0 on success, -1 on failure
  */
 int setup_data_connection(int control_sock_fd, int *p_data_listen_fd, char *port_cmd_buf, size_t port_cmd_buf_size) {
     struct sockaddr_in data_addr;
@@ -527,8 +545,18 @@ int setup_data_connection(int control_sock_fd, int *p_data_listen_fd, char *port
 }
 
 /*
- * read_reply - Reads a reply from the server control connection.
- * Rationale: Centralizes reply reading for easier error handling and debugging.
+ * read_reply - Reads a reply from the FTP server on the control connection.
+ * 
+ * This function handles multi-line responses from the server by:
+ * 1. Reading until it finds the end of the response (indicated by CRLF)
+ * 2. For multi-line responses, continuing until it finds the terminating line
+ *    (a line starting with the same code followed by a space instead of a hyphen)
+ * 
+ * FTP response format:
+ * - Single line: "XYZ Text\r\n" (e.g., "200 Command OK\r\n")
+ * - Multi-line:  "XYZ-Text1\r\nXYZ-Text2\r\nXYZ Text3\r\n"
+ * 
+ * Returns: Number of bytes received, 0 on disconnect, -1 on error
  */
 int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
     memset(reply_buffer, 0, buffer_size);
