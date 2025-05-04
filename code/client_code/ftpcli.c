@@ -64,8 +64,8 @@ int main(int argc, char *argv[]) {
 
     // Change to client directory
     if (chdir("client") < 0) {
-        // perror("Failed to change to client directory");
-        // fprintf(stderr, "Warning: Could not change to client directory\n");
+        perror("Failed to change to client directory");
+        fprintf(stderr, "Warning: Could not change to client directory\n");
     }
 
     // Initialize server address structure
@@ -198,7 +198,7 @@ int main(int argc, char *argv[]) {
                 } else {
                     int status;
                     waitpid(pid, &status, 0);
-                    // Don't print Transfer complete message
+                    
                 }
             } else {
                 // fprintf(stderr, "Unknown local command: %s\n", local_cmd);
@@ -568,9 +568,6 @@ int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
     // Use MSG_DONTWAIT if available (Linux specific)
     // bytes_read = recv(sock_fd, reply_buffer, buffer_size - 1, MSG_DONTWAIT);
 
-    // A more portable approach is to use select/poll before read, but for simplicity
-    // we'll do a simple blocking read here initially.
-    // Be aware this might block if the server doesn't respond as expected.
 
     bytes_read = read(sock_fd, reply_buffer, buffer_size - 1);
 
@@ -585,10 +582,6 @@ int read_reply(int sock_fd, char *reply_buffer, size_t buffer_size) {
     total_bytes_read = bytes_read;
     reply_buffer[total_bytes_read] = '\0'; // Null-terminate
 
-    // Note: This basic version doesn't handle multi-line FTP replies correctly.
-    // For example, LIST command output spans multiple lines but has one final code.
-    // A full implementation would need to parse the reply structure.
-    // For now, it reads whatever is available in one go.
 
     return total_bytes_read;
 }
